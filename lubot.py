@@ -28,6 +28,7 @@ from typing import Optional, Tuple, List, Dict, Any
 # ──────────────────────────────────────────────────────────────────────
 # THIRD‑PARTY IMPORTS
 # ──────────────────────────────────────────────────────────────────────
+import requests
 from requests.adapters import HTTPAdapter
 from telegram import Update
 from telegram.ext import (
@@ -56,6 +57,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/status - Check bot status\n"
         "/help - Show commands"
     )
+
 
 
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
