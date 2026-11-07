@@ -1,21 +1,5 @@
 import os
-import sys
-import json
-import base64
-import re
-import uuid
-import threading
-import time
-from concurrent.futures import ThreadPoolExecutor
 
-import requests
-from requests.adapters import HTTPAdapter
-
-import tkinter as tk
-from tkinter import messagebox
-
-
-import os
 from telegram import Update
 from telegram.ext import (
     Application,
@@ -23,6 +7,8 @@ from telegram.ext import (
     ContextTypes,
 )
 
+
+# Read the token from Render's environment variable
 TOKEN = os.environ["9293641988:AAGiI_l_TKp9bxwx-7oDAAClrwK6QiYPgJs"]
 
 
