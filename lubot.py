@@ -28,7 +28,6 @@ from typing import Optional, Tuple, List, Dict, Any
 # ──────────────────────────────────────────────────────────────────────
 # THIRD‑PARTY IMPORTS
 # ──────────────────────────────────────────────────────────────────────
-import requests
 from requests.adapters import HTTPAdapter
 from telegram import Update
 from telegram.ext import (
