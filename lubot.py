@@ -9,7 +9,7 @@ from telegram.ext import (
 
 
 # Read the token from Render's environment variable
-TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
+TOKEN = os.environ["TELEGRAM_TOKEN"]
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
